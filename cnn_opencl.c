@@ -73,8 +73,8 @@ static void pooling2x2(float* input, float* output, int N) {
 	/*input_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * n_input_size, input, &err);
 	output_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * n_output_size, NULL, &err);*/
 
-	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, sizeof(float) * n_input_size, input, 0, NULL, NULL);
-
+	err = clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, sizeof(float) * n_input_size, input, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	/*
 		step 3. 커널 인자 mapping
@@ -135,25 +135,35 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 	//cl_mem filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * D2 * 3 * 3 * sizeof(float), NULL, NULL);
 	//memset(outputs, 0, sizeof(float) * N * N * D2);
 	//cl_mem outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * N * N * sizeof(float), NULL, NULL);
+	cl_mem global_sum_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | )
 
 	// 9. command queue에 memory buffer 삽입하기
-	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, D1 * N * N * sizeof(float), inputs, 0, NULL, NULL);
-	clEnqueueWriteBuffer(queue, filtersBuffer, CL_TRUE, 0, D1 * D2 * 3 * 3 * sizeof(float), filters, 0, NULL, NULL);
+	err = clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, D1 * N * N * sizeof(float), inputs, 0, NULL, NULL);
+	CHECK_ERROR(err);
+	err = clEnqueueWriteBuffer(queue, filtersBuffer, CL_TRUE, 0, D1 * D2 * 3 * 3 * sizeof(float), filters, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 10. Kernel Argument 설정하기
-	clSetKernelArg(kernel_cnn, 0, sizeof(cl_mem), &inputsBuffer);
-	clSetKernelArg(kernel_cnn, 1, sizeof(cl_mem), &outputsBuffer);
-	clSetKernelArg(kernel_cnn, 2, sizeof(float) * N * N * D1, NULL); // 수정해야함 ( 추후 32 * 32 * 64 정도는 할당이 불가능하여 에러 발생 )
-	clSetKernelArg(kernel_cnn, 3, sizeof(cl_mem), &filtersBuffer);
-	clSetKernelArg(kernel_cnn, 4, sizeof(int), &matrixSize);
+	err = clSetKernelArg(kernel_cnn1, 0, sizeof(cl_mem), &inputsBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn1, 1, sizeof(cl_mem), &outputsBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn1, 2, sizeof(float) * N * N * D1, NULL); // 수정해야함 ( 추후 32 * 32 * 64 정도는 할당이 불가능하여 에러 발생 )
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn1, 3, sizeof(cl_mem), &filtersBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn1, 4, sizeof(int), &matrixSize);
+	CHECK_ERROR(err);
 
 	// 11. command queue에 kernel 삽입하기
 	size_t globalSize[2] = { D1, D2 };
 	size_t localSize[2] = { D1, 1 };
-	clEnqueueNDRangeKernel(queue, kernel_cnn, 2, NULL, globalSize, localSize, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(queue, kernel_cnn1, 2, NULL, globalSize, localSize, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 12. 출력 버퍼 반환하기
-	clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+	err = clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 13. 연산 완료까지 대기하기
 	clFlush(queue);
@@ -176,20 +186,26 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 	//cl_mem biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * sizeof(float), NULL, NULL);
 
 	// 9. queue에 집어넣기
-	clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, D2 * sizeof(float), biases, 0, NULL, NULL);
+	err = clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, D2 * sizeof(float), biases, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 10. Kernel Argument 설정하기
-	clSetKernelArg(kernel_cnn, 0, sizeof(cl_mem), &outputsBuffer);
-	clSetKernelArg(kernel_cnn, 1, sizeof(cl_mem), &biasBuffer);
-	clSetKernelArg(kernel_cnn, 2, sizeof(int), &matrixSize);
+	err = clSetKernelArg(kernel_cnn2, 0, sizeof(cl_mem), &outputsBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn2, 1, sizeof(cl_mem), &biasBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn2, 2, sizeof(int), &matrixSize);
+	CHECK_ERROR(err);
 
 	// 11. command queue에 kernel 삽입하기
 	size_t globalSize2[3] = { D2, N, N };
 	// size_t localSize[3] = { D1, D2 };
-	clEnqueueNDRangeKernel(queue, kernel_cnn, 3, NULL, globalSize2, NULL, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(queue, kernel_cnn2, 3, NULL, globalSize2, NULL, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 12. 출력 버퍼 반환하기
-	clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+	err = clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	// 13. 연산 완료까지 대기하기
 	clFlush(queue);
@@ -266,9 +282,12 @@ static void fc_layer(float* input_neuron, float* output_neuron, float* weights, 
 	//weightBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, M * N * sizeof(float), weights, NULL);
 	//biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, M * sizeof(float), biases, NULL);
 
-	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, N * sizeof(float), input_neuron, 0, NULL, NULL);
-	clEnqueueWriteBuffer(queue, weightBuffer, CL_TRUE, 0, N * M * sizeof(float), weights, 0, NULL, NULL);
-	clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, M * sizeof(float), biases, 0, NULL, NULL);
+	err = clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, N * sizeof(float), input_neuron, 0, NULL, NULL);
+	CHECK_ERROR(err);
+	err = clEnqueueWriteBuffer(queue, weightBuffer, CL_TRUE, 0, N * M * sizeof(float), weights, 0, NULL, NULL);
+	CHECK_ERROR(err);
+	err = clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, M * sizeof(float), biases, 0, NULL, NULL);
+	CHECK_ERROR(err);
 
 	err = clSetKernelArg(kernel_fc, 0, sizeof(cl_mem), &inputsBuffer);
 	CHECK_ERROR(err);
@@ -350,42 +369,61 @@ void cnn_init() {
 
 	// 3. context 생성하기
 	context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
+
 	// command queue create!!
 	queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
 	CHECK_ERROR(err);
 
 
-
-	size_t kernel_source_size;
-
 	/*
 		step 1. 커널 생성과 CL파일 객체 가져오기
 	*/
+	size_t kernel_source_size;
+
 	char* kernel_source_pooling = get_source_code("pooling.cl", &kernel_source_size);
 	program_pooling = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_pooling,
 		&kernel_source_size, &err);
 	CHECK_ERROR(err);
-
 	char* kernel_source_fc = get_source_code("fc.cl", &kernel_source_size);
 	program_fc = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_fc,
 		&kernel_source_size, &err);
 	CHECK_ERROR(err);
-
 	char* kernel_source_cnn1 = get_source_code("convolution1.cl", &kernel_source_size);
-	program_fc = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_cnn1,
+	program_cnn1 = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_cnn1,
+		&kernel_source_size, &err);
+	CHECK_ERROR(err);
+	char* kernel_source_cnn2 = get_source_code("convolution2.cl", &kernel_source_size);
+	program_cnn2 = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_cnn2,
 		&kernel_source_size, &err);
 	CHECK_ERROR(err);
 
+	/*
+		커널 컴파일 오브젝트 생성
+	*/
 	err = clBuildProgram(program_pooling, 1, &device, NULL, NULL, NULL);
 	CHECK_ERROR(err);
-
 	err = clBuildProgram(program_fc, 1, &device, NULL, NULL, NULL);
 	CHECK_ERROR(err);
+	err = clBuildProgram(program_cnn1, 1, &device, NULL, NULL, NULL);
+	CHECK_ERROR(err);
+	err = clBuildProgram(program_cnn2, 1, &device, NULL, NULL, NULL);
+	CHECK_ERROR(err);
 
+	/*
+		커널 생성
+	*/
 	kernel_pooling = clCreateKernel(program_pooling, "pooling", &err);
+	CHECK_ERROR(err);
 	kernel_fc = clCreateKernel(program_fc, "fullConnectionKernel", &err);
+	CHECK_ERROR(err);
 	kernel_cnn1 = clCreateKernel(program_cnn1, "innerProduct", &err);
+	CHECK_ERROR(err);
+	kernel_cnn2 = clCreateKernel(program_cnn2, "addBiasAndActiveFunc", &err);
+	CHECK_ERROR(err);
 
+	/*
+		커널 버퍼 생성
+	*/
 	inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * 32 * sizeof(float), NULL, NULL);
 	outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * 32 * sizeof(float), NULL, NULL);
 	filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 512 * 3 * 3 * sizeof(float), NULL, NULL);
