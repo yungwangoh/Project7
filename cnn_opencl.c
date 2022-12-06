@@ -26,9 +26,9 @@ cl_device_id device;
 cl_context context;
 cl_int err;
 cl_command_queue queue;
-cl_program program;
-cl_kernel kernel_pooling;
-cl_mem input_buf, output_buf;
+cl_program program_pooling, program_fc, program_cnn1, program_cnn2;
+cl_kernel kernel_pooling, kernel_fc, kernel_cnn1, kernel_cnn2;
+cl_mem outputsBuffer, inputsBuffer, filtersBuffer, biasBuffer, weightBuffer;
 
 char* get_source_code(const char* file_name, size_t* len) {
 	char* source_code;
@@ -65,20 +65,23 @@ char* get_source_code(const char* file_name, size_t* len) {
 static void pooling2x2(float* input, float* output, int N) {
 
 	/*
-	step 2. 메모리 초기화. CL 커널 버퍼 초기화
+		step 2. 메모리 초기화. CL 커널 버퍼 초기화
 	*/
 	int n_input_size = N * N * 4;
 	int n_output_size = N * N;
 
-	input_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * n_input_size, input, &err);
-	output_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * n_output_size, NULL, &err);
+	/*input_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * n_input_size, input, &err);
+	output_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * n_output_size, NULL, &err);*/
+
+	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, sizeof(float) * n_input_size, input, 0, NULL, NULL);
+
 
 	/*
 		step 3. 커널 인자 mapping
 	*/
-	err = clSetKernelArg(kernel_pooling, 0, sizeof(cl_mem), &input_buf);
+	err = clSetKernelArg(kernel_pooling, 0, sizeof(cl_mem), &inputsBuffer);
 	CHECK_ERROR(err);
-	err = clSetKernelArg(kernel_pooling, 1, sizeof(cl_mem), &output_buf);
+	err = clSetKernelArg(kernel_pooling, 1, sizeof(cl_mem), &outputsBuffer);
 	CHECK_ERROR(err);
 	err = clSetKernelArg(kernel_pooling, 2, sizeof(int), &N);
 	CHECK_ERROR(err);
@@ -86,15 +89,15 @@ static void pooling2x2(float* input, float* output, int N) {
 	/*
 		step 4. 커맨드 큐 삽입
 	*/
-	size_t global_size[2] = {N, N};
-	size_t local_size[2] = { 1, 1 };
-	err = clEnqueueNDRangeKernel(queue, kernel_pooling, 2, NULL, global_size, NULL, 0, NULL, NULL);
+	size_t global_size[2] = { N, N };
+	size_t local_size[2] = { N, 1 };
+	err = clEnqueueNDRangeKernel(queue, kernel_pooling, 2, NULL, global_size, local_size, 0, NULL, NULL);
 	CHECK_ERROR(err);
 
 	/*
 		step 5. 커널 버퍼 읽기
 	*/
-	err = clEnqueueReadBuffer(queue, output_buf, CL_TRUE, 0, sizeof(float) * n_output_size, output, 0, NULL, NULL);
+	err = clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, sizeof(float) * n_output_size, output, 0, NULL, NULL);
 	CHECK_ERROR(err);
 }
 
@@ -113,23 +116,113 @@ static void pooling_layer(float* inputs, float* outputs, int D, int N) {
 	}
 }
 
-static void convolution3x3(float* input, float* output, float* filter, int N) {
-	int i, j, k, l;
-	for (i = 0; i < N; i++) {
-		for (j = 0; j < N; j++) {
-			float sum = 0;
-			for (k = 0; k < 3; k++) {
-				for (l = 0; l < 3; l++) {
-					int x = i + k - 1;
-					int y = j + l - 1;
-					if (x >= 0 && x < N && y >= 0 && y < N)
-						sum += input[x * N + y] * filter[k * 3 + l];
-				}
-			}
-			output[i * N + j] += sum;
+/** convolution_layer
+	* 이미지 내에서 필터를 활용하여 특징을 추출
+	* 선 검출 필터를 이용해 convolution
+	* 선으로 표현된 그림을 도출하는 과정
+	* 필터 연산으로 출력 피처 맵의 크기 축소를 막기 위해 패딩 적용
+	* D2 = output channel size
+	* D1 = input channel size
+	* N = width and height of an input image
+	* input image is zero-padded by 1.
+	* Thus, input is (D1, N, N) and output is (D2, N, N)
+	**/
+static void convolution_layer(float* inputs, float* outputs, float* filters, float* biases, int D2, int D1, int N) {
+	int matrixSize = N;
+
+	//// 8. memory buffer 생성하기
+	//cl_mem inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * N * N * sizeof(float), NULL, NULL);
+	//cl_mem filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * D2 * 3 * 3 * sizeof(float), NULL, NULL);
+	//memset(outputs, 0, sizeof(float) * N * N * D2);
+	//cl_mem outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * N * N * sizeof(float), NULL, NULL);
+
+	// 9. command queue에 memory buffer 삽입하기
+	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, D1 * N * N * sizeof(float), inputs, 0, NULL, NULL);
+	clEnqueueWriteBuffer(queue, filtersBuffer, CL_TRUE, 0, D1 * D2 * 3 * 3 * sizeof(float), filters, 0, NULL, NULL);
+
+	// 10. Kernel Argument 설정하기
+	clSetKernelArg(kernel_cnn, 0, sizeof(cl_mem), &inputsBuffer);
+	clSetKernelArg(kernel_cnn, 1, sizeof(cl_mem), &outputsBuffer);
+	clSetKernelArg(kernel_cnn, 2, sizeof(float) * N * N * D1, NULL); // 수정해야함 ( 추후 32 * 32 * 64 정도는 할당이 불가능하여 에러 발생 )
+	clSetKernelArg(kernel_cnn, 3, sizeof(cl_mem), &filtersBuffer);
+	clSetKernelArg(kernel_cnn, 4, sizeof(int), &matrixSize);
+
+	// 11. command queue에 kernel 삽입하기
+	size_t globalSize[2] = { D1, D2 };
+	size_t localSize[2] = { D1, 1 };
+	clEnqueueNDRangeKernel(queue, kernel_cnn, 2, NULL, globalSize, localSize, 0, NULL, NULL);
+
+	// 12. 출력 버퍼 반환하기
+	clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+
+	// 13. 연산 완료까지 대기하기
+	clFlush(queue);
+	clFinish(queue);
+
+	/*printf("===========================innerProductFinish\n");
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j < N; j++) {
+			printf(" %f", outputs[i * N + j]);
 		}
-	}
+		printf("\n");
+	}*/
+
+
+	system("pause");
+
+	/* ============================================================================ */
+
+	//// 8. memory Buffer 생성하기
+	//cl_mem biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * sizeof(float), NULL, NULL);
+
+	// 9. queue에 집어넣기
+	clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, D2 * sizeof(float), biases, 0, NULL, NULL);
+
+	// 10. Kernel Argument 설정하기
+	clSetKernelArg(kernel_cnn, 0, sizeof(cl_mem), &outputsBuffer);
+	clSetKernelArg(kernel_cnn, 1, sizeof(cl_mem), &biasBuffer);
+	clSetKernelArg(kernel_cnn, 2, sizeof(int), &matrixSize);
+
+	// 11. command queue에 kernel 삽입하기
+	size_t globalSize2[3] = { D2, N, N };
+	// size_t localSize[3] = { D1, D2 };
+	clEnqueueNDRangeKernel(queue, kernel_cnn, 3, NULL, globalSize2, NULL, 0, NULL, NULL);
+
+	// 12. 출력 버퍼 반환하기
+	clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, D2 * N * N * sizeof(float), outputs, 0, NULL, NULL);
+
+	// 13. 연산 완료까지 대기하기
+	clFlush(queue);
+	clFinish(queue);
+
+	/*printf("===========================activeFuncFinish\n");
+	for (int i = 0; i < N; i++) {
+		for (int j = 0; j < N; j++) {
+			printf(" %f", outputs[i * N + j]);
+		}
+		printf("\n");
+	}*/
+
+
+	system("pause");
 }
+//static void convolution3x3(float* input, float* output, float* filter, int N) {
+//	int i, j, k, l;
+//	for (i = 0; i < N; i++) {
+//		for (j = 0; j < N; j++) {
+//			float sum = 0;
+//			for (k = 0; k < 3; k++) {
+//				for (l = 0; l < 3; l++) {
+//					int x = i + k - 1;
+//					int y = j + l - 1;
+//					if (x >= 0 && x < N && y >= 0 && y < N)
+//						sum += input[x * N + y] * filter[k * 3 + l];
+//				}
+//			}
+//			output[i * N + j] += sum;
+//		}
+//	}
+//}
 
 /*
  * D2 = output channel size
@@ -138,44 +231,63 @@ static void convolution3x3(float* input, float* output, float* filter, int N) {
  * input image is zero-padded by 1.
  * Thus, input is (D1, N, N) and output is (D2, N, N)
  */
-#define ReLU(x) (((x)>0)?(x):0)
-static void convolution_layer(float* inputs, float* outputs, float* filters, float* biases, int D2, int D1, int N) {
-	int i, j;
-
-	memset(outputs, 0, sizeof(float) * N * N * D2);
-
-	for (j = 0; j < D2; j++) {
-		for (i = 0; i < D1; i++) {
-			float* input = inputs + N * N * i;
-			float* output = outputs + N * N * j;
-			float* filter = filters + 3 * 3 * (j * D1 + i);
-			convolution3x3(input, output, filter, N);
-		}
-	}
-
-	for (i = 0; i < D2; i++) {
-		float* output = outputs + N * N * i;
-		float bias = biases[i];
-		for (j = 0; j < N * N; j++) {
-			output[j] = ReLU(output[j] + bias);
-		}
-	}
-}
+//#define ReLU(x) (((x)>0)?(x):0)
+//static void convolution_layer(float* inputs, float* outputs, float* filters, float* biases, int D2, int D1, int N) {
+//	int i, j;
+//
+//	memset(outputs, 0, sizeof(float) * N * N * D2);
+//
+//	for (j = 0; j < D2; j++) {
+//		for (i = 0; i < D1; i++) {
+//			float* input = inputs + N * N * i;
+//			float* output = outputs + N * N * j;
+//			float* filter = filters + 3 * 3 * (j * D1 + i);
+//			convolution3x3(input, output, filter, N);
+//		}
+//	}
+//
+//	for (i = 0; i < D2; i++) {
+//		float* output = outputs + N * N * i;
+//		float bias = biases[i];
+//		for (j = 0; j < N * N; j++) {
+//			output[j] = ReLU(output[j] + bias);
+//		}
+//	}
+//}
 
 /*
  * M = output size
  * N = input size
  */
 static void fc_layer(float* input_neuron, float* output_neuron, float* weights, float* biases, int M, int N) {
-	int i, j;
-	for (j = 0; j < M; j++) {
-		float sum = 0;
-		for (i = 0; i < N; i++) {
-			sum += input_neuron[i] * weights[j * N + i];
-		}
-		sum += biases[j];
-		output_neuron[j] = ReLU(sum);
-	}
+
+	//inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, N * sizeof(float), input_neuron, NULL);
+	//outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, M * sizeof(float), NULL, NULL);
+	//weightBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, M * N * sizeof(float), weights, NULL);
+	//biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, M * sizeof(float), biases, NULL);
+
+	clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, N * sizeof(float), input_neuron, 0, NULL, NULL);
+	clEnqueueWriteBuffer(queue, weightBuffer, CL_TRUE, 0, N * M * sizeof(float), weights, 0, NULL, NULL);
+	clEnqueueWriteBuffer(queue, biasBuffer, CL_TRUE, 0, M * sizeof(float), biases, 0, NULL, NULL);
+
+	err = clSetKernelArg(kernel_fc, 0, sizeof(cl_mem), &inputsBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_fc, 1, sizeof(cl_mem), &outputsBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_fc, 2, sizeof(cl_mem), &weightBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_fc, 3, sizeof(cl_mem), &biasBuffer);
+	CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_fc, 4, sizeof(int), &N);
+	CHECK_ERROR(err);
+
+	size_t global_size = M;
+
+	err = clEnqueueNDRangeKernel(queue, kernel_fc, 1, NULL, &global_size, NULL, 0, NULL, NULL);
+	CHECK_ERROR(err);
+
+	err = clEnqueueReadBuffer(queue, outputsBuffer, CL_TRUE, 0, sizeof(float) * M, output_neuron, 0, NULL, NULL);
+	CHECK_ERROR(err);
 }
 
 static void softmax(float* output, int N) {
@@ -242,21 +354,43 @@ void cnn_init() {
 	queue = clCreateCommandQueueWithProperties(context, device, 0, &err);
 	CHECK_ERROR(err);
 
+
+
 	size_t kernel_source_size;
 
 	/*
 		step 1. 커널 생성과 CL파일 객체 가져오기
 	*/
-	char* kernel_source = get_source_code("pooling.cl", &kernel_source_size);
-	program = clCreateProgramWithSource(context, 1, (const char**)&kernel_source,
+	char* kernel_source_pooling = get_source_code("pooling.cl", &kernel_source_size);
+	program_pooling = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_pooling,
 		&kernel_source_size, &err);
 	CHECK_ERROR(err);
 
-	err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+	char* kernel_source_fc = get_source_code("fc.cl", &kernel_source_size);
+	program_fc = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_fc,
+		&kernel_source_size, &err);
 	CHECK_ERROR(err);
 
-	kernel_pooling = clCreateKernel(program, "pooling", &err);
+	char* kernel_source_cnn1 = get_source_code("convolution1.cl", &kernel_source_size);
+	program_fc = clCreateProgramWithSource(context, 1, (const char**)&kernel_source_cnn1,
+		&kernel_source_size, &err);
+	CHECK_ERROR(err);
 
+	err = clBuildProgram(program_pooling, 1, &device, NULL, NULL, NULL);
+	CHECK_ERROR(err);
+
+	err = clBuildProgram(program_fc, 1, &device, NULL, NULL, NULL);
+	CHECK_ERROR(err);
+
+	kernel_pooling = clCreateKernel(program_pooling, "pooling", &err);
+	kernel_fc = clCreateKernel(program_fc, "fullConnectionKernel", &err);
+	kernel_cnn1 = clCreateKernel(program_cnn1, "innerProduct", &err);
+
+	inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * 32 * sizeof(float), NULL, NULL);
+	outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * 32 * sizeof(float), NULL, NULL);
+	filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 512 * 3 * 3 * sizeof(float), NULL, NULL);
+	biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * sizeof(float), NULL, NULL);
+	weightBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 512 * sizeof(float), NULL, NULL);
 }
 
 
@@ -290,7 +424,7 @@ void cnn(float* images, float** network, int* labels, float* confidences, int nu
 	w1 = network[26]; b1 = network[27];
 	w2 = network[28]; b2 = network[29];
 	w3 = network[30]; b3 = network[31];
-	
+
 	// allocate memory for output of each layer
 	float* c1_1, * c1_2, * p1;
 	float* c2_1, * c2_2, * p2;
@@ -319,45 +453,45 @@ void cnn(float* images, float** network, int* labels, float* confidences, int nu
 	fc1 = alloc_layer(512);
 	fc2 = alloc_layer(512);
 	fc3 = alloc_layer(10);
-	
+
 	// run network
 	for (int i = 0; i < num_images; ++i)
 	{
 		float* image = images + i * 3 * 32 * 32;
-	
+
 		convolution_layer(image, c1_1, w1_1, b1_1, 64, 3, 32);
 		convolution_layer(c1_1, c1_2, w1_2, b1_2, 64, 64, 32);
 		pooling_layer(c1_2, p1, 64, 16);
-	
+
 		convolution_layer(p1, c2_1, w2_1, b2_1, 128, 64, 16);
 		convolution_layer(c2_1, c2_2, w2_2, b2_2, 128, 128, 16);
 		pooling_layer(c2_2, p2, 128, 8);
-	
+
 		convolution_layer(p2, c3_1, w3_1, b3_1, 256, 128, 8);
 		convolution_layer(c3_1, c3_2, w3_2, b3_2, 256, 256, 8);
 		convolution_layer(c3_2, c3_3, w3_3, b3_3, 256, 256, 8);
 		pooling_layer(c3_3, p3, 256, 4);
-	
+
 		convolution_layer(p3, c4_1, w4_1, b4_1, 512, 256, 4);
 		convolution_layer(c4_1, c4_2, w4_2, b4_2, 512, 512, 4);
 		convolution_layer(c4_2, c4_3, w4_3, b4_3, 512, 512, 4);
 		pooling_layer(c4_3, p4, 512, 2);
-	
+
 		convolution_layer(p4, c5_1, w5_1, b5_1, 512, 512, 2);
 		convolution_layer(c5_1, c5_2, w5_2, b5_2, 512, 512, 2);
 		convolution_layer(c5_2, c5_3, w5_3, b5_3, 512, 512, 2);
 		pooling_layer(c5_3, p5, 512, 1);
-	
+
 		fc_layer(p5, fc1, w1, b1, 512, 512);
 		fc_layer(fc1, fc2, w2, b2, 512, 512);
 		fc_layer(fc2, fc3, w3, b3, 10, 512);
-	
+
 		softmax(fc3, 10);
-	
+
 		labels[i] = find_max(fc3, 10);
 		confidences[i] = fc3[labels[i]];
 	}
-	
+
 	free(c1_1); free(c1_2); free(p1);
 	free(c2_1); free(c2_2); free(p2);
 	free(c3_1); free(c3_2); free(c3_3); free(p3);
@@ -365,10 +499,24 @@ void cnn(float* images, float** network, int* labels, float* confidences, int nu
 	free(c5_1); free(c5_2); free(c5_3); free(p5);
 	free(fc1); free(fc2); free(fc3);
 
-	clReleaseMemObject(input_buf);
-	clReleaseMemObject(output_buf);
+	// fc
+	//clReleaseMemObject(outputBuffer);
+	//clReleaseMemObject(inputBuffer);
+	//clReleaseMemObject(weightBuffer);
+	//clReleaseMemObject(biasesBuffer);
+	clReleaseKernel(kernel_fc);
+
+	//// pooling
+	//clReleaseMemObject(input_buf);
+	//clReleaseMemObject(output_buf);
 	clReleaseKernel(kernel_pooling);
-	clReleaseProgram(program);
+
+	// cnn
+
+
+	// other
+	clReleaseProgram(program_pooling);
+	clReleaseProgram(program_fc);
 	clReleaseCommandQueue(queue);
 	clReleaseContext(context);
 	free(platforms);
