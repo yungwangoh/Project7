@@ -30,6 +30,29 @@ cl_program program_pooling, program_fc, program_cnn1, program_cnn2;
 cl_kernel kernel_pooling, kernel_fc, kernel_cnn1, kernel_cnn2;
 cl_mem outputsBuffer, inputsBuffer, filtersBuffer, biasBuffer, weightBuffer;
 
+void error_detect(cl_program program, cl_device_id device, cl_int err) {
+	if (err == CL_BUILD_PROGRAM_FAILURE) {
+		size_t log_size;
+		char* log;
+
+		//get log size from build info log first.
+		err = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0,
+			NULL, &log_size);
+		CHECK_ERROR(err);
+
+		log = (char*)malloc(log_size + 1);
+		//get log from build info log.
+		err = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG,
+			log_size, log, NULL);
+		CHECK_ERROR(err);
+
+		log[log_size] = '\0';
+		//show the log
+		printf("comfiler error : \n%s\n", log);
+		free(log);
+		exit(0);
+	}
+}
 char* get_source_code(const char* file_name, size_t* len) {
 	char* source_code;
 	char buf[2] = "\0";
@@ -131,11 +154,13 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 	int matrixSize = N;
 
 	//// 8. memory buffer 생성하기
-	//cl_mem inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * N * N * sizeof(float), NULL, NULL);
-	//cl_mem filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * D2 * 3 * 3 * sizeof(float), NULL, NULL);
-	//memset(outputs, 0, sizeof(float) * N * N * D2);
-	//cl_mem outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * N * N * sizeof(float), NULL, NULL);
-	cl_mem global_sum_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | )
+	cl_mem inputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * N * N * sizeof(float), NULL, NULL);
+	cl_mem filtersBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D1 * D2 * 3 * 3 * sizeof(float), NULL, NULL);
+	memset(outputs, 0, sizeof(float) * N * N * D2);
+	cl_mem outputsBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * N * N * sizeof(float), NULL, NULL);
+
+	float* sum_buf = (float*)malloc(sizeof(float) * D2 * N * N);
+	cl_mem global_sum_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, D2 * N * N * sizeof(float), NULL, NULL);
 
 	// 9. command queue에 memory buffer 삽입하기
 	err = clEnqueueWriteBuffer(queue, inputsBuffer, CL_TRUE, 0, D1 * N * N * sizeof(float), inputs, 0, NULL, NULL);
@@ -143,22 +168,27 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 	err = clEnqueueWriteBuffer(queue, filtersBuffer, CL_TRUE, 0, D1 * D2 * 3 * 3 * sizeof(float), filters, 0, NULL, NULL);
 	CHECK_ERROR(err);
 
+	err = clEnqueueWriteBuffer(queue, global_sum_buf, CL_TRUE, 0, D2 * N * N * sizeof(float), sum_buf, 0, NULL, NULL);
+	CHECK_ERROR(err);
+
 	// 10. Kernel Argument 설정하기
 	err = clSetKernelArg(kernel_cnn1, 0, sizeof(cl_mem), &inputsBuffer);
 	CHECK_ERROR(err);
 	err = clSetKernelArg(kernel_cnn1, 1, sizeof(cl_mem), &outputsBuffer);
 	CHECK_ERROR(err);
-	err = clSetKernelArg(kernel_cnn1, 2, sizeof(float) * N * N * D1, NULL); // 수정해야함 ( 추후 32 * 32 * 64 정도는 할당이 불가능하여 에러 발생 )
+	//err = clSetKernelArg(kernel_cnn1, 2, sizeof(float) * N * N * D1, NULL); // 수정해야함 ( 추후 32 * 32 * 64 정도는 할당이 불가능하여 에러 발생 )
+	//CHECK_ERROR(err);
+	err = clSetKernelArg(kernel_cnn1, 2, sizeof(cl_mem), &global_sum_buf);
 	CHECK_ERROR(err);
 	err = clSetKernelArg(kernel_cnn1, 3, sizeof(cl_mem), &filtersBuffer);
 	CHECK_ERROR(err);
-	err = clSetKernelArg(kernel_cnn1, 4, sizeof(int), &matrixSize);
+	err = clSetKernelArg(kernel_cnn1, 4, sizeof(int), &N);
 	CHECK_ERROR(err);
 
 	// 11. command queue에 kernel 삽입하기
 	size_t globalSize[2] = { D1, D2 };
 	size_t localSize[2] = { D1, 1 };
-	err = clEnqueueNDRangeKernel(queue, kernel_cnn1, 2, NULL, globalSize, localSize, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(queue, kernel_cnn1, 2, NULL, globalSize, NULL, 0, NULL, NULL);
 	CHECK_ERROR(err);
 
 	// 12. 출력 버퍼 반환하기
@@ -177,9 +207,6 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 		printf("\n");
 	}*/
 
-
-	system("pause");
-
 	/* ============================================================================ */
 
 	//// 8. memory Buffer 생성하기
@@ -194,7 +221,7 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 	CHECK_ERROR(err);
 	err = clSetKernelArg(kernel_cnn2, 1, sizeof(cl_mem), &biasBuffer);
 	CHECK_ERROR(err);
-	err = clSetKernelArg(kernel_cnn2, 2, sizeof(int), &matrixSize);
+	err = clSetKernelArg(kernel_cnn2, 2, sizeof(int), &N);
 	CHECK_ERROR(err);
 
 	// 11. command queue에 kernel 삽입하기
@@ -218,9 +245,6 @@ static void convolution_layer(float* inputs, float* outputs, float* filters, flo
 		}
 		printf("\n");
 	}*/
-
-
-	system("pause");
 }
 //static void convolution3x3(float* input, float* output, float* filter, int N) {
 //	int i, j, k, l;
@@ -357,12 +381,12 @@ void cnn_init() {
 	CHECK_ERROR(err);
 
 	// 2. device 가져오기
-	err = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_ALL, 0, NULL, &deviceCount);
+	err = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_ALL, 0, NULL, &deviceCount);
 	CHECK_ERROR(err);
 
 	devices = (cl_device_id*)malloc(sizeof(cl_device_id) * deviceCount);
 
-	err = clGetDeviceIDs(platforms[1], CL_DEVICE_TYPE_ALL, deviceCount, devices, NULL);
+	err = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_ALL, deviceCount, devices, NULL);
 	CHECK_ERROR(err);
 
 	device = devices[0];
@@ -405,9 +429,9 @@ void cnn_init() {
 	err = clBuildProgram(program_fc, 1, &device, NULL, NULL, NULL);
 	CHECK_ERROR(err);
 	err = clBuildProgram(program_cnn1, 1, &device, NULL, NULL, NULL);
-	CHECK_ERROR(err);
+	error_detect(program_cnn1, device, err);
 	err = clBuildProgram(program_cnn2, 1, &device, NULL, NULL, NULL);
-	CHECK_ERROR(err);
+	error_detect(program_cnn2, device, err);
 
 	/*
 		커널 생성
@@ -430,7 +454,6 @@ void cnn_init() {
 	biasBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 32 * sizeof(float), NULL, NULL);
 	weightBuffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 512 * 512 * sizeof(float), NULL, NULL);
 }
-
 
 void cnn(float* images, float** network, int* labels, float* confidences, int num_images) {
 	/*
@@ -550,7 +573,8 @@ void cnn(float* images, float** network, int* labels, float* confidences, int nu
 	clReleaseKernel(kernel_pooling);
 
 	// cnn
-
+	clReleaseKernel(kernel_cnn1);
+	clReleaseKernel(kernel_cnn2);
 
 	// other
 	clReleaseProgram(program_pooling);
